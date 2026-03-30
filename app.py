@@ -43,7 +43,7 @@ def clean_val(val):
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/000000/analytics.png", width=80)
     st.title("Settings")
-    client_name = st.text_input("Client/Brand Name", value="Swedemount")
+    client_name = st.text_input("Client/Brand Name", value="Zalando")
     ex_rate = st.number_input("Exchange Rate (EUR to SEK)", value=11.20)
     
     st.markdown("---")
