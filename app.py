@@ -4,162 +4,178 @@ import re
 import warnings
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 warnings.filterwarnings('ignore')
 
 # --- CONFIGURATION & BRANDING ---
 st.set_page_config(page_title="Marketing Intelligence Dashboard", layout="wide", page_icon="📊")
 
-# Custom CSS for a "Premium" look
 st.markdown("""
     <style>
-    .stMetric { 
-        background-color: #ffffff; 
-        padding: 20px; 
-        border-radius: 12px; 
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        border: 1px solid #f0f2f6;
-    }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #e6e9ef; }
     [data-testid="stHeader"] { background-color: #000000; }
-    .main { background-color: #f9fbff; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- UTILITY FUNCTIONS ---
 def clean_val(val):
-    if pd.isna(val) or val == '' or str(val).lower() == 'undefined': 
-        return 0.0
+    if pd.isna(val) or val == '' or str(val).lower() == 'undefined': return 0.0
     s = str(val).strip().replace('€', '').replace('%', '').replace('SEK', '')
     s = re.sub(r'[\s\xa0]+', '', s) 
     if ',' in s:
         if '.' in s: s = s.replace('.', '')
         s = s.replace(',', '.')
-    try:
-        return float(s)
-    except:
-        return 0.0
+    try: return float(s)
+    except: return 0.0
 
-# --- SIDEBAR: SETTINGS ---
+def get_delta_pct(current, previous):
+    if previous == 0: return 0.0
+    return (current - previous) / previous
+
+# --- SIDEBAR ---
 with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/000000/analytics.png", width=80)
-    st.title("Settings")
-    client_name = st.text_input("Client/Brand Name", value="Zalando")
-    ex_rate = st.number_input("Exchange Rate (EUR to SEK)", value=10.66)
+    st.image("https://img.icons8.com/fluency/96/000000/analytics.png", width=60)
+    st.title("Control Panel")
+    client_name = st.text_input("Brand", value="Zalando")
+    ex_rate = st.number_input("EUR to SEK", value=10.66)
+    f_mkt = st.file_uploader("Upload ZMS Report (CSV)", type="csv")
+    show_sek = st.checkbox("Show SEK", value=False)
     
-    st.markdown("---")
-    st.header("📂 Data Source")
-    f_mkt = st.file_uploader("Upload ZMS SKU Report (CSV)", type="csv")
-    
-    st.markdown("---")
-    show_sek = st.checkbox("Show SEK Values", value=False)
     currency_label = "kr" if show_sek else "€"
     multiplier = ex_rate if show_sek else 1.0
 
-# --- MAIN DASHBOARD ---
-st.title(f"📊 {client_name} Marketing Intelligence")
-
+# --- DATA PROCESSING ---
 if f_mkt:
-    # Auto-detect separator
     try:
-        header_line = f_mkt.readline().decode('utf-8')
-        f_mkt.seek(0)
-        sep = ';' if ';' in header_line else ','
-        df = pd.read_csv(f_mkt, sep=sep, engine='python', encoding='utf-8')
+        df = pd.read_csv(f_mkt, sep=None, engine='python', encoding='utf-8')
     except:
         f_mkt.seek(0)
-        df = pd.read_csv(f_mkt, sep=sep, engine='python', encoding='ISO-8859-1')
+        df = pd.read_csv(f_mkt, sep=None, engine='python', encoding='ISO-8859-1')
     
     df.columns = [c.replace(' ', '') for c in df.columns]
     
-    # Mapping columns
-    m_cols = {'Spend': 'Budgetspent', 'GMV': 'GMV', 'Wish': 'Addtowishlist', 'Clicks': 'Clicks', 'Sold': 'Itemssold'}
+    # Advanced Column Mapping
+    mapping = {
+        'Spend': 'Budgetspent', 'GMV': 'GMV', 'Wish': 'Addtowishlist', 
+        'Clicks': 'Clicks', 'Sold': 'Itemssold', 'Impressions': 'Impressions',
+        'SKU': 'ArticleSKU', 'Campaign': 'ZMSCampaign'
+    }
     
-    # Clean Year/Week
     df['Week'] = df['Week'].apply(clean_val).astype(int)
     df['Year'] = df['Year'].apply(clean_val).astype(int)
     
-    for k, v in m_cols.items():
+    for k, v in mapping.items():
         if v in df.columns:
-            df[k] = df[v].apply(clean_val)
+            if k in ['SKU', 'Campaign']: df[k] = df[v].astype(str)
+            else: df[k] = df[v].apply(clean_val)
         else:
-            df[k] = 0.0
+            df[k] = 0.0 if k not in ['SKU', 'Campaign'] else "Unknown"
 
-    # Determine Timeframes
+    # --- TIME LOGIC ---
     years = sorted(df['Year'].unique())
     curr_yr = years[-1]
-    df_curr = df[df['Year'] == curr_yr]
-    weeks = sorted(df_curr['Week'].unique())
+    prev_yr = years[-2] if len(years) > 1 else None
+    
+    weeks = sorted(df[df['Year'] == curr_yr]['Week'].unique())
+    cw = weeks[-1]
+    lw = weeks[-2] if len(weeks) > 1 else None
+    llw = weeks[-3] if len(weeks) > 2 else None
 
-    if len(weeks) >= 2:
-        # Week Selectors
-        col_w1, col_w2 = st.columns(2)
-        cw_w = col_w1.selectbox("Current Week", options=reversed(weeks), index=0)
-        lw_w = col_w2.selectbox("Previous Week", options=reversed(weeks), index=1)
+    # --- METRIC CALCULATION ---
+    def get_stats(year, week):
+        temp = df[(df['Year'] == year) & (df['Week'] == week)]
+        res = temp[['Spend', 'GMV', 'Wish', 'Clicks', 'Sold', 'Impressions']].sum()
+        res['ROAS'] = res['GMV'] / res['Spend'] if res['Spend'] > 0 else 0
+        return res
 
-        m_cw = df_curr[df_curr['Week'] == cw_w]
-        m_lw = df_curr[df_curr['Week'] == lw_w]
+    s_cw = get_stats(curr_yr, cw)
+    s_lw = get_stats(curr_yr, lw) if lw else s_cw * 0
+    s_ly = get_stats(prev_yr, cw) if prev_yr else s_cw * 0
+    s_llw = get_stats(curr_yr, llw) if llw else s_lw * 0
+
+    # --- MAIN UI ---
+    st.title(f"📊 {client_name} Marketing Intelligence")
+    
+    # 1. SUMMARY TILES
+    st.subheader(f"Performance Summary: Week {cw}")
+    m1, m2, m3, m4 = st.columns(4)
+    
+    with m1:
+        st.metric("Ad Spend", f"{currency_label}{s_cw['Spend']*multiplier:,.0f}", 
+                  delta=f"WoW: {get_delta_pct(s_cw['Spend'], s_lw['Spend']):.1%} | LY: {get_delta_pct(s_cw['Spend'], s_ly['Spend']):.1%}")
+    with m2:
+        st.metric("Total GMV", f"{currency_label}{s_cw['GMV']*multiplier:,.0f}", 
+                  delta=f"WoW: {get_delta_pct(s_cw['GMV'], s_lw['GMV']):.1%} | LY: {get_delta_pct(s_cw['GMV'], s_ly['GMV']):.1%}")
+    with m3:
+        st.metric("ROAS", f"{s_cw['ROAS']:.2f}x", 
+                  delta=f"WoW: {get_delta_pct(s_cw['ROAS'], s_lw['ROAS']):.1%} | LY: {get_delta_pct(s_cw['ROAS'], s_ly['ROAS']):.1%}")
+    with m4:
+        st.metric("Impressions", f"{s_cw['Impressions']:,.0f}", 
+                  delta=f"WoW: {get_delta_pct(s_cw['Impressions'], s_lw['Impressions']):.1%} | LY: {get_delta_pct(s_cw['Impressions'], s_ly['Impressions']):.1%}")
+
+    # 2. TREND CHART (DUAL AXIS)
+    st.markdown("---")
+    trend = df[df['Year'] == curr_yr].groupby('Week').agg({'Spend':'sum', 'GMV':'sum'}).reset_index()
+    trend['ROAS'] = trend['GMV'] / trend['Spend']
+    
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=trend['Week'], y=trend['Spend'], name="Spend", marker_color='#ff4b4b'), secondary_y=False)
+    fig.add_trace(go.Bar(x=trend['Week'], y=trend['GMV'], name="GMV", marker_color='#0068c9', opacity=0.6), secondary_y=False)
+    fig.add_trace(go.Scatter(x=trend['Week'], y=trend['ROAS'], name="ROAS", line=dict(color='#2ecc71', width=3)), secondary_y=True)
+    
+    fig.update_layout(title="Weekly Spend, GMV & ROAS Trend", barmode='group', height=400)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 3. CAMPAIGN ANALYTICS (WoW & YoY)
+    st.markdown("---")
+    st.subheader("📣 Campaign Analytics")
+
+    def prep_comp(group_col):
+        c_data = df[(df['Year']==curr_yr) & (df['Week']==cw)].groupby(group_col)[['Spend','GMV']].sum()
+        l_data = df[(df['Year']==curr_yr) & (df['Week']==lw)].groupby(group_col)[['Spend','GMV']].sum()
+        ll_data = df[(df['Year']==curr_yr) & (df['Week']==llw)].groupby(group_col)[['Spend','GMV']].sum()
+        y_data = df[(df['Year']==prev_yr) & (df['Week']==cw)].groupby(group_col)[['Spend','GMV']].sum() if prev_yr else pd.DataFrame()
+
+        final = c_data.join(l_data, rsuffix='_LW').join(ll_data, rsuffix='_LLW').join(y_data, rsuffix='_LY').fillna(0)
         
-        s_cw = m_cw[['Spend', 'GMV', 'Wish', 'Clicks', 'Sold']].sum()
-        s_lw = m_lw[['Spend', 'GMV', 'Wish', 'Clicks', 'Sold']].sum()
-
-        roas_cw = s_cw['GMV']/s_cw['Spend'] if s_cw['Spend'] > 0 else 0
-        roas_lw = s_lw['GMV']/s_lw['Spend'] if s_lw['Spend'] > 0 else 0
-
-        # --- SECTION 1: WEEKLY SUMMARY ---
-        st.subheader(f"Week {cw_w} vs Week {lw_w} Performance")
-        k1, k2, k3, k4, k5 = st.columns(5)
+        # Calculations
+        final['Spend WoW%'] = (final['Spend'] - final['Spend_LW']) / final['Spend_LW'].replace(0,1)
+        final['Spend LY%'] = (final['Spend'] - final['Spend_LY']) / final['Spend_LY'].replace(0,1)
+        final['GMV WoW%'] = (final['GMV'] - final['GMV_LW']) / final['GMV_LW'].replace(0,1)
+        final['GMV LY%'] = (final['GMV'] - final['GMV_LY']) / final['GMV_LY'].replace(0,1)
         
-        k1.metric("Ad Spend", f"{currency_label}{s_cw['Spend']*multiplier:,.0f}", 
-                  delta=f"{(s_cw['Spend']-s_lw['Spend'])*multiplier:,.0f}", delta_color="inverse")
-        k2.metric("Total GMV", f"{currency_label}{s_cw['GMV']*multiplier:,.0f}", 
-                  delta=f"{(s_cw['GMV']-s_lw['GMV'])*multiplier:,.0f}")
-        k3.metric("ROAS", f"{roas_cw:.2f}x", delta=f"{roas_cw-roas_lw:.2f}")
-        k4.metric("Wishlists", f"{s_cw['Wish']:,.0f}", delta=f"{s_cw['Wish']-s_lw['Wish']:,.0f}")
-        cvr_cw = (s_cw['Sold']/s_cw['Clicks'] if s_cw['Clicks']>0 else 0)
-        k5.metric("CVR", f"{cvr_cw:.1%}")
+        final['ROAS'] = final['GMV'] / final['Spend'].replace(0,1)
+        final['ROAS_LW'] = final['GMV_LW'] / final['Spend_LW'].replace(0,1)
+        final['ROAS Δ'] = final['ROAS'] - final['ROAS_LW']
+        return final.reset_index()
 
-        # --- SECTION 2: TREND ---
-        st.markdown("---")
-        trend_data = df_curr.groupby('Week')[['Spend', 'GMV']].sum().reset_index()
-        fig_trend = go.Figure()
-        fig_trend.add_trace(go.Scatter(x=trend_data['Week'], y=trend_data['Spend'], name="Spend", line=dict(color='#ff4b4b')))
-        fig_trend.add_trace(go.Bar(x=trend_data['Week'], y=trend_data['GMV'], name="GMV", opacity=0.3, marker_color='#0068c9'))
-        fig_trend.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
-        st.plotly_chart(fig_trend, use_container_width=True)
+    camp_df = prep_comp('Campaign')
+    st.dataframe(camp_df[['Campaign', 'Spend', 'Spend WoW%', 'Spend LY%', 'GMV', 'GMV WoW%', 'GMV LY%', 'ROAS', 'ROAS Δ']], 
+                 column_config={
+                     "Spend": st.column_config.NumberColumn(f"Spend {currency_label}"),
+                     "Spend WoW%": st.column_config.NumberColumn("vs LW %", format="%.1f%%"),
+                     "Spend LY%": st.column_config.NumberColumn("vs LY %", format="%.1f%%"),
+                     "GMV WoW%": st.column_config.NumberColumn("GMV vs LW %", format="%.1f%%"),
+                     "ROAS Δ": st.column_config.NumberColumn("ROAS vs LW", format="%.2f")
+                 }, hide_index=True, use_container_width=True)
 
-        # --- SECTION 3: YoY CAMPAIGN ---
-        st.markdown("---")
-        st.subheader("📣 Campaign Analytics (YoY Compare)")
-        if len(years) >= 2:
-            last_yr = years[-2]
-            cw_camp = df[df['Year'] == curr_yr].groupby('ZMSCampaign')[['Spend', 'GMV']].sum().reset_index()
-            ly_camp = df[df['Year'] == last_yr].groupby('ZMSCampaign')[['Spend', 'GMV']].sum().reset_index()
-            m_comp = cw_camp.merge(ly_camp, on='ZMSCampaign', how='left', suffixes=('_CW', '_LY')).fillna(0)
-            
-            m_comp['Spend YoY %'] = (m_comp['Spend_CW'] - m_comp['Spend_LY']) / m_comp['Spend_LY'].replace(0, 1)
-            m_comp['GMV YoY %'] = (m_comp['GMV_CW'] - m_comp['GMV_LY']) / m_comp['GMV_LY'].replace(0, 1)
-            m_comp['ROAS'] = m_comp['GMV_CW'] / m_comp['Spend_CW'].replace(0, 1)
-            
-            # Apply multiplier for display
-            disp_df = m_comp.copy()
-            disp_df['Spend_CW'] *= multiplier
-            disp_df['GMV_CW'] *= multiplier
+    # 4. ARTICLE ANALYTICS
+    st.markdown("---")
+    st.subheader("📦 Article SKU Performance (Last Week)")
+    art_df = df[(df['Year']==curr_yr) & (df['Week']==cw)].groupby('SKU').agg({
+        'GMV': 'sum', 'Spend': 'sum', 'Clicks': 'sum', 'Sold': 'sum', 'Wish': 'sum'
+    }).reset_index()
+    
+    art_df['ROAS'] = art_df['GMV'] / art_df['Spend'].replace(0,1)
+    art_df['CVR'] = art_df['Sold'] / art_df['Clicks'].replace(0,1)
+    
+    st.dataframe(art_df[['SKU', 'ROAS', 'Clicks', 'CVR', 'Wish']].sort_values('ROAS', ascending=False),
+                 column_config={
+                     "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
+                     "CVR": st.column_config.NumberColumn("CVR", format="%.1%"),
+                     "Wish": st.column_config.NumberColumn("Wishlists")
+                 }, hide_index=True, use_container_width=True)
 
-            st.dataframe(
-                disp_df[['ZMSCampaign', 'Spend_CW', 'Spend YoY %', 'GMV_CW', 'GMV YoY %', 'ROAS']].sort_values('Spend_CW', ascending=False),
-                column_config={
-                    "Spend_CW": st.column_config.NumberColumn(f"Spend {currency_label}", format=f"{currency_label}%.0f"),
-                    "Spend YoY %": st.column_config.NumberColumn("Spend Δ LY", format="%.1f%%"),
-                    "GMV_CW": st.column_config.NumberColumn(f"GMV {currency_label}", format=f"{currency_label}%.0f"),
-                    "GMV YoY %": st.column_config.NumberColumn("GMV Δ LY", format="%.1f%%"),
-                    "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx")
-                },
-                hide_index=True, use_container_width=True
-            )
-        else:
-            st.warning("Only one year detected in file. Upload multi-year data for YoY comparison.")
-    else:
-        st.error("Insufficient week data for comparison.")
 else:
-    st.title("📊 Marketplace Marketing Intelligence")
-    st.info("👈 Upload your ZMS CSV file in the sidebar to begin.")
+    st.info("👈 Please upload the ZMS CSV file to generate the Intelligence Report.")
