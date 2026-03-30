@@ -43,7 +43,7 @@ def clean_val(val):
 with st.sidebar:
     st.title("🛡️ Dashboard Access")
     # Simple access control for colleagues
-    access_code = st.text_input("Enter Access Code", type="2026")
+    access_code = st.text_input("Enter Access Code", type="password")
     
     if access_code == "ZMS2024": # Set your own code here
         st.success("Access Granted")
