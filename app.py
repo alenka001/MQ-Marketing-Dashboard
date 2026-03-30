@@ -44,7 +44,7 @@ with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/000000/analytics.png", width=80)
     st.title("Settings")
     client_name = st.text_input("Client/Brand Name", value="Zalando")
-    ex_rate = st.number_input("Exchange Rate (EUR to SEK)", value=11.20)
+    ex_rate = st.number_input("Exchange Rate (EUR to SEK)", value=10.66)
     
     st.markdown("---")
     st.header("📂 Data Source")
