@@ -59,7 +59,7 @@ if f_mkt:
     mapping = {
         'Spend': 'Budgetspent', 'GMV': 'GMV', 'Wish': 'Addtowishlist', 
         'Clicks': 'Clicks', 'Sold': 'Itemssold', 'Impressions': 'Impressions',
-        'SKU': 'ArticleSKU', 'Campaign': 'ZMSCampaign'
+        'ConfigSKU': 'ArticleSKU', 'Campaign': 'ZMSCampaign'
     }
     
     df['Week'] = df['Week'].apply(clean_val).astype(int)
@@ -67,10 +67,10 @@ if f_mkt:
     
     for k, v in mapping.items():
         if v in df.columns:
-            if k in ['SKU', 'Campaign']: df[k] = df[v].astype(str)
+            if k in ['ConfigSKU', 'Campaign']: df[k] = df[v].astype(str)
             else: df[k] = df[v].apply(clean_val)
         else:
-            df[k] = 0.0 if k not in ['SKU', 'Campaign'] else "Unknown"
+            df[k] = 0.0 if k not in ['ConfigSKU', 'Campaign'] else "Unknown"
 
     # --- TIME LOGIC ---
     years = sorted(df['Year'].unique())
@@ -163,14 +163,14 @@ if f_mkt:
     # 4. ARTICLE ANALYTICS
     st.markdown("---")
     st.subheader("📦 Article SKU Performance (Last Week)")
-    art_df = df[(df['Year']==curr_yr) & (df['Week']==cw)].groupby('SKU').agg({
+    art_df = df[(df['Year']==curr_yr) & (df['Week']==cw)].groupby('ConfigSKU').agg({
         'GMV': 'sum', 'Spend': 'sum', 'Clicks': 'sum', 'Sold': 'sum', 'Wish': 'sum'
     }).reset_index()
     
     art_df['ROAS'] = art_df['GMV'] / art_df['Spend'].replace(0,1)
     art_df['CVR'] = art_df['Sold'] / art_df['Clicks'].replace(0,1)
     
-    st.dataframe(art_df[['SKU', 'ROAS', 'Clicks', 'CVR', 'Wish']].sort_values('ROAS', ascending=False),
+    st.dataframe(art_df[['ConfigSKU', 'ROAS', 'Clicks', 'CVR', 'Wish']].sort_values('ROAS', ascending=False),
                  column_config={
                      "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
                      "CVR": st.column_config.NumberColumn("CVR", format="%.1%"),
