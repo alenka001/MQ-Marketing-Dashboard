@@ -73,7 +73,7 @@ if f_mkt:
         if v in df.columns: df[k] = df[v].apply(clean_val)
         else: df[k] = 0.0
 
-    # 2. LOAD INVENTORY DATA & PIVOT STOCK (New Pivot Logic)
+    # 2. LOAD INVENTORY DATA & PIVOT STOCK (Robust Match Version)
     inv_map = {}
     stock_map = {}
     if f_inv:
@@ -83,28 +83,39 @@ if f_mkt:
             f_inv.seek(0)
             df_inv = pd.read_csv(f_inv, sep=';', engine='python', encoding='ISO-8859-1')
         
-        df_inv.columns = [c.strip() for c in df_inv.columns]
+        # Standardize column names (remove spaces, lowercase)
+        df_inv.columns = [c.strip().lower() for c in df_inv.columns]
         
-        if 'zalando_article_variant' in df_inv.columns:
-            # Aggregate Inventory per Zalando SKU (Sums stock across all sizes)
-            df_inv['zfs_clean'] = df_inv['sellable_zfs_stock'].apply(clean_val)
-            df_inv['pf_clean'] = df_inv['sellable_pf_stock'].apply(clean_val)
+        # Identify the correct SKU column in Inventory (usually zalando_article_variant)
+        inv_sku_col = next((c for c in df_inv.columns if 'zalando_article_variant' in c or 'config' in c), None)
+        name_col = next((c for c in df_inv.columns if 'article_name' in c or 'product_title' in c), None)
+        
+        if inv_sku_col and name_col:
+            # Clean stock numbers
+            df_inv['zfs_clean'] = df_inv.get('sellable_zfs_stock', 0).apply(clean_val)
+            df_inv['pf_clean'] = df_inv.get('sellable_pf_stock', 0).apply(clean_val)
             
-            # Pivot the inventory to match Config SKU
-            inv_pivoted = df_inv.groupby('zalando_article_variant').agg({
-                'article_name': 'first',
+            # Pivot: Group by the SKU and sum the stock across all sizes
+            inv_pivoted = df_inv.groupby(inv_sku_col).agg({
+                name_col: 'first',
                 'zfs_clean': 'sum',
                 'pf_clean': 'sum'
             }).reset_index()
             
-            inv_map = inv_pivoted.set_index('zalando_article_variant')['article_name'].to_dict()
-            stock_map = inv_pivoted.set_index('zalando_article_variant')[['zfs_clean', 'pf_clean']].sum(axis=1).to_dict()
+            # Create the Mappings
+            inv_map = inv_pivoted.set_index(inv_sku_col)[name_col].to_dict()
+            stock_map = inv_pivoted.set_index(inv_sku_col)[['zfs_clean', 'pf_clean']].sum(axis=1).to_dict()
             
-            df['ArticleName'] = df['Config SKU'].map(inv_map).fillna(df['Config SKU'])
-            df['TotalStock'] = df['Config SKU'].map(stock_map).fillna(0)
+            # Match to Market Report (Ensure Config SKU is also stripped of spaces for the match)
+            df['Config SKU Clean'] = df['Config SKU'].str.strip()
+            df['ArticleName'] = df['Config SKU Clean'].map(inv_map).fillna(df['Config SKU'])
+            df['TotalStock'] = df['Config SKU Clean'].map(stock_map).fillna(0)
+        else:
+            df['ArticleName'] = df['Config SKU']
+            df['TotalStock'] = 0
     else:
         df['ArticleName'] = df['Config SKU']
-        df['TotalStock'] = 9999 # Avoid false threats if no file is uploaded
+        df['TotalStock'] = 0 # Changed from 9999 to 0 to show data is missing
 
     # --- TOP FILTERS (Automatic Latest Defaults) ---
     st.title(f"📊 {client_name} Strategic Board")
