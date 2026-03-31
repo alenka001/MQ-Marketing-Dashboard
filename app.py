@@ -58,6 +58,7 @@ with st.sidebar:
 
 # --- MAIN DASHBOARD LOGIC ---
 if f_mkt:
+    # 1. LOAD MARKET DATA
     try:
         df = pd.read_csv(f_mkt, sep=';', engine='python', encoding='utf-8')
     except:
@@ -66,7 +67,6 @@ if f_mkt:
     
     df.columns = [c.strip() for c in df.columns]
     
-    # Mapping - Updated to include PDP views and Cart
     m_cols = {
         'Spend': 'Budget spent', 'GMV': 'GMV', 'Wish': 'Add to wishlist', 
         'Clicks': 'Clicks', 'Sold': 'Items sold', 'Impressions': 'Viewable ad impressions',
@@ -76,7 +76,7 @@ if f_mkt:
         if v in df.columns: df[k] = df[v].apply(clean_val)
         else: df[k] = 0.0
 
-    # 2. LOAD INVENTORY DATA & PIVOT (Aggregating by SKU)
+    # 2. LOAD INVENTORY DATA & PIVOT (RESTORED WORKING SCRIPT)
     inv_map, stock_map = {}, {}
     if f_inv:
         try:
@@ -84,16 +84,27 @@ if f_mkt:
         except:
             f_inv.seek(0)
             df_inv = pd.read_csv(f_inv, sep=';', engine='python', encoding='ISO-8859-1')
+        
         df_inv.columns = [c.strip().lower() for c in df_inv.columns]
-        sku_col = next((c for c in df_inv.columns if 'article_variant' in c), None)
+        
+        # Återställer sökningen efter Zalando_Article_Variant
+        inv_sku_col = next((c for c in df_inv.columns if 'zalando_article_variant' in c), None)
         name_col = next((c for c in df_inv.columns if 'article_name' in c), None)
-        if sku_col:
-            df_inv[sku_col] = df_inv[sku_col].astype(str).str.strip().str.upper()
+        
+        if inv_sku_col:
+            df_inv[inv_sku_col] = df_inv[inv_sku_col].astype(str).str.strip().str.upper()
             df_inv['zfs_clean'] = df_inv.get('sellable_zfs_stock', 0).apply(clean_val)
             df_inv['pf_clean'] = df_inv.get('sellable_pf_stock', 0).apply(clean_val)
-            inv_piv = df_inv.groupby(sku_col).agg({name_col if name_col else sku_col: 'first', 'zfs_clean': 'sum', 'pf_clean': 'sum'}).reset_index()
-            inv_map = inv_piv.set_index(sku_col)[name_col if name_col else sku_col].to_dict()
-            stock_map = inv_piv.set_index(sku_col)[['zfs_clean', 'pf_clean']].sum(axis=1).to_dict()
+            
+            # PIVOT efter Zalando_Article_Variant (Återställt)
+            inv_pivoted = df_inv.groupby(inv_sku_col).agg({
+                name_col if name_col else inv_sku_col: 'first',
+                'zfs_clean': 'sum',
+                'pf_clean': 'sum'
+            }).reset_index()
+            
+            inv_map = inv_pivoted.set_index(inv_sku_col)[name_col if name_col else inv_sku_col].to_dict()
+            stock_map = inv_pivoted.set_index(inv_sku_col)[['zfs_clean', 'pf_clean']].sum(axis=1).to_dict()
 
     df['Config SKU Match'] = df['Config SKU'].astype(str).str.strip().str.upper()
     df['ArticleName'] = df['Config SKU Match'].map(inv_map).fillna(df['Config SKU'])
@@ -132,22 +143,19 @@ if f_mkt:
     s_lw = get_period_stats(last_p)
     dropout_cw = (s_cw['Cart'] - s_cw['Sold']) / s_cw['Cart'] if s_cw['Cart'] > 0 else 0
 
-    # --- UI SECTION 1: PERFORMANCE SNAPSHOT (Expanded Row 1) ---
-    st.subheader(f"Performance Snapshot: {time_grain} {curr_p} vs {last_p}")
-    
-    # Row 1: Primary Metrics
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Ad Spend", f"{currency_label}{s_cw['Spend']*multiplier:,.0f}", delta=f"{get_delta_pct(s_cw['Spend'], s_lw['Spend']):.1%}", delta_color="inverse")
-    m2.metric("Total GMV", f"{currency_label}{s_cw['GMV']*multiplier:,.0f}", delta=f"{get_delta_pct(s_cw['GMV'], s_lw['GMV']):.1%}")
-    m3.metric("ROAS", f"{s_cw['ROAS']:.2f}x", delta=f"{s_cw['ROAS'] - s_lw['ROAS']:.2f} pts")
-    m4.metric("Checkout Drop-out", f"{dropout_cw:.1%}", help="Rate of items added to cart but not sold.")
+    # --- UI SECTION 1: KPI TILES (Expanded with Impressions & PDP) ---
+    st.subheader(f"Snapshot: {time_grain} {curr_p} vs {last_p}")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Ad Spend", f"{currency_label}{s_cw['Spend']*multiplier:,.0f}", delta=f"{get_delta_pct(s_cw['Spend'], s_lw['Spend']):.1%}", delta_color="inverse")
+    k2.metric("Total GMV", f"{currency_label}{s_cw['GMV']*multiplier:,.0f}", delta=f"{get_delta_pct(s_cw['GMV'], s_lw['GMV']):.1%}")
+    k3.metric("ROAS", f"{s_cw['ROAS']:.2f}x", delta=f"{s_cw['ROAS'] - s_lw['ROAS']:.2f} pts")
+    k4.metric("Checkout Drop-out", f"{dropout_cw:.1%}", help="Items in cart vs sold")
 
-    # Row 2 (still part of top snapshot): Traffic & Engagement
-    m5, m6, m7, m8 = st.columns(4)
-    m5.metric("Impressions", f"{s_cw['Impressions']:,.0f}", delta=f"{get_delta_pct(s_cw['Impressions'], s_lw['Impressions']):.1%}")
-    m6.metric("PDP Views", f"{s_cw['PDP_Views']:,.0f}", delta=f"{get_delta_pct(s_cw['PDP_Views'], s_lw['PDP_Views']):.1%}")
-    m7.metric("Wishlists", f"{s_cw['Wish']:,.0f}", delta=f"{get_delta_pct(s_cw['Wish'], s_lw['Wish']):.1%}")
-    m8.metric("CVR", f"{(s_cw['Sold']/s_cw['Clicks'] if s_cw['Clicks']>0 else 0):.1%}")
+    k5, k6, k7, k8 = st.columns(4)
+    k5.metric("Impressions", f"{s_cw['Impressions']:,.0f}", delta=f"{get_delta_pct(s_cw['Impressions'], s_lw['Impressions']):.1%}")
+    k6.metric("PDP Views", f"{s_cw['PDP_Views']:,.0f}", delta=f"{get_delta_pct(s_cw['PDP_Views'], s_lw['PDP_Views']):.1%}")
+    k7.metric("Wishlists", f"{s_cw['Wish']:,.0f}", delta=f"{get_delta_pct(s_cw['Wish'], s_lw['Wish']):.1%}")
+    k8.metric("CVR", f"{(s_cw['Sold']/s_cw['Clicks'] if s_cw['Clicks']>0 else 0):.1%}")
 
     # --- UI SECTION 2: VISUAL ANALYTICS ---
     st.markdown("---")
@@ -185,7 +193,7 @@ if f_mkt:
         cat_data['COS'] = (cat_data['Spend'] / cat_data['GMV']).fillna(0)
         st.dataframe(cat_data.sort_values('GMV', ascending=False), column_config={"Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), "ROAS": st.column_config.NumberColumn(format="%.2fx"), "COS": st.column_config.NumberColumn(format="%.1%")}, hide_index=True, use_container_width=True)
 
-    # --- CAMPAIGN & STOCK THREAT (FIXED STOCK) ---
+    # --- CAMPAIGN & STOCK THREAT (RESTORED FIXED LOGIC) ---
     st.markdown("---")
     st.subheader("📣 Campaign Level Breakdown & Stock Threats")
     camp_cw = df_f[df_f[time_grain] == curr_p].groupby(['ZMS Campaign', 'Config SKU', 'ArticleName']).agg({'Spend':'sum', 'GMV':'sum', 'Wish':'sum', 'Sold':'sum', 'TotalStock':'max'}).reset_index()
@@ -200,11 +208,8 @@ if f_mkt:
     roas_trend = "positive" if s_cw['ROAS'] >= s_lw['ROAS'] else "negative"
     stock_threats = len(camp_cw[camp_cw['Stock Threat'] == "🚨 Sell Out Risk"])
     col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.markdown(f"""<div class="commentary-box"><strong>✅ What has improved</strong><ul><li>Efficiency trend is <b>{roas_trend}</b>.</li><li>Impressions are up by <b>{get_delta_pct(s_cw['Impressions'], s_lw['Impressions']):.1%}</b>.</li></ul></div>""", unsafe_allow_html=True)
-    with col_b:
-        st.markdown(f"""<div class="commentary-box"><strong>⚠️ Areas to optimize</strong><ul><li>Checkout Drop-out at <b>{dropout_cw:.1%}</b>.</li><li>Detected <b>{stock_threats}</b> articles with sell-out risk.</li></ul></div>""", unsafe_allow_html=True)
-    with col_c:
-        st.markdown("""<div class="commentary-box"><strong>🎯 Next Steps</strong><ul><li>Prioritize restock for risk articles.</li><li>Retarget users who dropped out of checkout.</li></ul></div>""", unsafe_allow_html=True)
+    col_a.markdown(f"""<div class="commentary-box"><strong>✅ What has improved</strong><ul><li>Efficiency trend is <b>{roas_trend}</b>.</li><li>Impressions up <b>{get_delta_pct(s_cw['Impressions'], s_lw['Impressions']):.1%}</b>.</li></ul></div>""", unsafe_allow_html=True)
+    col_b.markdown(f"""<div class="commentary-box"><strong>⚠️ Areas to optimize</strong><ul><li>Checkout Drop-out at <b>{dropout_cw:.1%}</b>.</li><li>Detected <b>{stock_threats}</b> articles with sell-out risk.</li></ul></div>""", unsafe_allow_html=True)
+    col_c.markdown("""<div class="commentary-box"><strong>🎯 Next Steps</strong><ul><li>Prioritize restock for risk articles.</li><li>Retarget users who dropped out.</li></ul></div>""", unsafe_allow_html=True)
 else:
     st.info("👈 Please upload the reports in the sidebar.")
