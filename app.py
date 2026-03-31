@@ -175,13 +175,34 @@ if f_mkt:
 
     with row2_2:
         st.subheader("Top Wishlisted Styles")
-        # Added Config SKU to Label
+        
+        # 1. Filter data for the current selected week
+        # 2. Group by both Name and SKU to ensure we have both pieces of info
         wish_df = df_f[df_f['Week'] == cw_w].groupby(['ArticleName', 'Config SKU'])['Wish'].sum().reset_index()
-        wish_df['ChartLabel'] = wish_df['ArticleName'] + " (" + wish_df['Config SKU'] + ")"
+        
+        # 3. Create the combined label: "Product Name (SKU)"
+        wish_df['DisplayLabel'] = wish_df['ArticleName'] + " (" + wish_df['Config SKU'] + ")"
+        
+        # 4. Sort and take the top 10
         wish_df = wish_df.sort_values('Wish', ascending=False).head(10)
         
-        fig_wish = px.bar(wish_df, y='ChartLabel', x='Wish', orientation='h', color_discrete_sequence=['#ffaa00'])
-        fig_wish.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), yaxis={'categoryorder':'total ascending'}, showlegend=False)
+        # 5. Build the chart using the new DisplayLabel
+        fig_wish = px.bar(
+            wish_df, 
+            y='DisplayLabel', 
+            x='Wish', 
+            orientation='h', 
+            color_discrete_sequence=['#ffaa00'],
+            labels={'DisplayLabel': 'Product & SKU', 'Wish': 'Add to Wishlist'}
+        )
+        
+        # 6. Formatting the layout
+        fig_wish.update_layout(
+            height=350, 
+            margin=dict(l=0, r=0, t=20, b=0), 
+            yaxis={'categoryorder':'total ascending'}, 
+            showlegend=False
+        )
         st.plotly_chart(fig_wish, use_container_width=True)
 
     # --- UI SECTION 3: CAMPAIGN & STOCK THREAT ---
