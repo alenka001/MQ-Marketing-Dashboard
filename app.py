@@ -83,6 +83,8 @@ if f_mkt:
             f_inv.seek(0)
             df_inv = pd.read_csv(f_inv, sep=';', engine='python', encoding='ISO-8859-1')
         
+        df_inv.columns = [c.strip() for c in df_inv.columns]
+        
         if 'zalando_article_variant' in df_inv.columns:
             # Aggregate Inventory per Zalando SKU (Sums stock across all sizes)
             df_inv['zfs_clean'] = df_inv['sellable_zfs_stock'].apply(clean_val)
@@ -104,7 +106,7 @@ if f_mkt:
         df['ArticleName'] = df['Config SKU']
         df['TotalStock'] = 9999 # Avoid false threats if no file is uploaded
 
-    # --- TOP FILTERS (Added Automatic Latest Defaults) ---
+    # --- TOP FILTERS (Automatic Latest Defaults) ---
     st.title(f"📊 {client_name} Strategic Board")
     
     years = sorted(df['Year'].unique(), reverse=True)
@@ -175,18 +177,11 @@ if f_mkt:
 
     with row2_2:
         st.subheader("Top Wishlisted Styles")
-        
-        # 1. Filter data for the current selected week
-        # 2. Group by both Name and SKU to ensure we have both pieces of info
+        # Added Config SKU to labels
         wish_df = df_f[df_f['Week'] == cw_w].groupby(['ArticleName', 'Config SKU'])['Wish'].sum().reset_index()
-        
-        # 3. Create the combined label: "Product Name (SKU)"
         wish_df['DisplayLabel'] = wish_df['ArticleName'] + " (" + wish_df['Config SKU'] + ")"
-        
-        # 4. Sort and take the top 10
         wish_df = wish_df.sort_values('Wish', ascending=False).head(10)
         
-        # 5. Build the chart using the new DisplayLabel
         fig_wish = px.bar(
             wish_df, 
             y='DisplayLabel', 
@@ -195,14 +190,7 @@ if f_mkt:
             color_discrete_sequence=['#ffaa00'],
             labels={'DisplayLabel': 'Product & SKU', 'Wish': 'Add to Wishlist'}
         )
-        
-        # 6. Formatting the layout
-        fig_wish.update_layout(
-            height=350, 
-            margin=dict(l=0, r=0, t=20, b=0), 
-            yaxis={'categoryorder':'total ascending'}, 
-            showlegend=False
-        )
+        fig_wish.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), yaxis={'categoryorder':'total ascending'}, showlegend=False)
         st.plotly_chart(fig_wish, use_container_width=True)
 
     # --- UI SECTION 3: CAMPAIGN & STOCK THREAT ---
@@ -214,7 +202,7 @@ if f_mkt:
         'Spend':'sum', 'GMV':'sum', 'Wish':'sum', 'Sold':'sum', 'TotalStock':'max'
     }).reset_index()
     
-    # Threat Logic: Items sold this week exceeds remaining inventory
+    # Threat Logic: Items sold this week exceeds total style inventory
     camp_cw['Stock Threat'] = camp_cw.apply(lambda x: "🚨 Sell Out Risk" if x['Sold'] >= x['TotalStock'] and x['TotalStock'] > 0 else ("✅ OK" if x['TotalStock'] > 0 else "❓ No Data"), axis=1)
 
     st.dataframe(
@@ -223,7 +211,7 @@ if f_mkt:
             "Spend": st.column_config.NumberColumn(f"Spend {currency_label}", format=f"{currency_label}%.0f"),
             "GMV": st.column_config.NumberColumn(f"GMV {currency_label}", format=f"{currency_label}%.0f"),
             "Sold": "Sold (CW)",
-            "TotalStock": "Stock Level"
+            "TotalStock": "Style Stock Level"
         }, hide_index=True, use_container_width=True
     )
 
