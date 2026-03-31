@@ -15,26 +15,21 @@ st.markdown("""
     <style>
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #e6e9ef; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     [data-testid="stHeader"] { background-color: #000000; }
-    .commentary-box { background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #000000; margin-top: 10px; margin-bottom: 20px; }
+    .commentary-box { background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #000000; margin-top: 10px; margin-bottom: 20px; height: 100%; }
     .main { background-color: #f9fbff; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- UTILITY FUNCTIONS (Aggressive cleaning to fix the "0" issue) ---
+# --- UTILITY FUNCTIONS ---
 def clean_val(val):
     if pd.isna(val) or val == '' or str(val).lower() == 'undefined': return 0.0
-    
-    # Ta bort allt som INTE är en siffra, komma eller punkt
     s = str(val).strip()
+    # Ta bort allt utom siffror, komma och punkt (löser mellanslag i tal och valutasymboler)
     s = re.sub(r'[^\d,.-]', '', s) 
-    
     if not s: return 0.0
-    
-    # Hantera europeiskt format: 1.234,56 -> 1234.56
     if ',' in s:
-        if '.' in s: s = s.replace('.', '') # Ta bort tusentals-punkt
-        s = s.replace(',', '.') # Ersätt decimal-komma med punkt
-        
+        if '.' in s: s = s.replace('.', '')
+        s = s.replace(',', '.')
     try: return float(s)
     except: return 0.0
 
@@ -50,8 +45,8 @@ with st.sidebar:
     ex_rate = st.number_input("EUR to SEK", value=10.66)
     
     st.markdown("---")
-    st.header("📅 Tidsinställning")
-    time_grain = st.radio("Visa data per:", ["Week", "Month"])
+    st.header("📅 Time Granularity")
+    time_grain = st.radio("View by:", ["Week", "Month"])
     
     st.markdown("---")
     st.header("📂 Data Source")
@@ -74,7 +69,6 @@ if f_mkt:
     
     df.columns = [c.strip() for c in df.columns]
     
-    # Mapping
     m_cols = {
         'Spend': 'Budget spent', 'GMV': 'GMV', 'Wish': 'Add to wishlist', 
         'Clicks': 'Clicks', 'Sold': 'Items sold', 'Impressions': 'Viewable ad impressions'
@@ -84,8 +78,7 @@ if f_mkt:
         else: df[k] = 0.0
 
     # 2. LOAD INVENTORY DATA & NAMES
-    inv_map = {}
-    stock_map = {}
+    inv_map, stock_map = {}, {}
     if f_inv:
         try:
             df_inv = pd.read_csv(f_inv, sep=';', engine='python', encoding='utf-8')
@@ -94,15 +87,15 @@ if f_mkt:
             df_inv = pd.read_csv(f_inv, sep=';', engine='python', encoding='ISO-8859-1')
         
         df_inv.columns = [c.strip().lower() for c in df_inv.columns]
-        inv_sku_col = next((c for c in df_inv.columns if 'article_variant' in c), None)
+        sku_col = next((c for c in df_inv.columns if 'article_variant' in c), None)
         name_col = next((c for c in df_inv.columns if 'article_name' in c), None)
         
-        if inv_sku_col and name_col:
-            df_inv[inv_sku_col] = df_inv[inv_sku_col].astype(str).str.strip().str.upper()
+        if sku_col and name_col:
+            df_inv[sku_col] = df_inv[sku_col].astype(str).str.strip().str.upper()
             df_inv['total_s'] = df_inv.get('sellable_zfs_stock', 0).apply(clean_val) + df_inv.get('sellable_pf_stock', 0).apply(clean_val)
-            inv_piv = df_inv.groupby(inv_sku_col).agg({name_col: 'first', 'total_s': 'sum'}).reset_index()
-            inv_map = inv_piv.set_index(inv_sku_col)[name_col].to_dict()
-            stock_map = inv_piv.set_index(inv_sku_col)['total_s'].to_dict()
+            inv_piv = df_inv.groupby(sku_col).agg({name_col: 'first', 'total_s': 'sum'}).reset_index()
+            inv_map = inv_piv.set_index(sku_col)[name_col].to_dict()
+            stock_map = inv_piv.set_index(sku_col)['total_s'].to_dict()
 
     df['Config SKU Match'] = df['Config SKU'].astype(str).str.strip().str.upper()
     df['ArticleName'] = df['Config SKU Match'].map(inv_map).fillna(df['Config SKU'])
@@ -116,59 +109,45 @@ if f_mkt:
     sel_year = c1.selectbox("Filter Year", years, index=0)
     
     available_periods = sorted(df[df['Year'] == sel_year][time_grain].unique(), reverse=True)
-    cw_p = c2.selectbox(f"Current {time_grain}", available_periods, index=0)
-    lw_p = c3.selectbox(f"Comparison {time_grain}", available_periods, index=min(1, len(available_periods)-1))
+    curr_p = c2.selectbox(f"Current {time_grain}", available_periods, index=0)
+    last_p = c3.selectbox(f"Comparison {time_grain}", available_periods, index=min(1, len(available_periods)-1))
 
-    # Apply Filtering
+    # Sidebar: RESTORED Gender and Market Filters
+    with st.sidebar:
+        st.markdown("---")
+        st.header("🎯 Target Filters")
+        all_markets = ["All Markets"] + sorted([str(x) for x in df['Market'].dropna().unique()])
+        sel_market = st.selectbox("Market Selector", all_markets)
+        all_genders = ["All Genders"] + sorted([str(x) for x in df['Gender'].dropna().unique() if str(x).lower() != 'undefined'])
+        sel_gender = st.selectbox("Gender Selector", all_genders)
+
+    # Apply Global Filtering
     df_f = df[df['Year'] == sel_year].copy()
-    
-    # Calculations
-    s_cw = df_f[df_f[time_grain] == cw_p][['Spend', 'GMV', 'Wish', 'Clicks', 'Sold']].sum()
-    s_lw = df_f[df_f[time_grain] == lw_p][['Spend', 'GMV', 'Wish', 'Clicks', 'Sold']].sum()
-    roas_cw = s_cw['GMV'] / s_cw['Spend'] if s_cw['Spend'] > 0 else 0
-    roas_lw = s_lw['GMV'] / s_lw['Spend'] if s_lw['Spend'] > 0 else 0
+    if sel_market != "All Markets":
+        df_f = df_f[df_f['Market'] == sel_market]
+    if sel_gender != "All Genders":
+        df_f = df_f[df_f['Gender'] == sel_gender]
 
-    # --- KPI TILES ---
-    st.subheader(f"Snapshot: {time_grain} {cw_p} vs {lw_p}")
+    # --- CALCULATIONS ---
+    def get_period_stats(val):
+        subset = df_f[df_f[time_grain] == val]
+        stats = subset[['Spend', 'GMV', 'Wish', 'Clicks', 'Sold']].sum()
+        stats['ROAS'] = stats['GMV'] / stats['Spend'] if stats['Spend'] > 0 else 0
+        return stats
+
+    s_cw = get_period_stats(curr_p)
+    s_lw = get_period_stats(last_p)
+
+    # --- UI SECTION 1: KPI TILES ---
+    st.subheader(f"Performance Snapshot: {time_grain} {curr_p} vs {last_p}")
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Ad Spend", f"{currency_label}{s_cw['Spend']*multiplier:,.0f}", delta=f"{get_delta_pct(s_cw['Spend'], s_lw['Spend']):.1%}", delta_color="inverse")
     k2.metric("Total GMV", f"{currency_label}{s_cw['GMV']*multiplier:,.0f}", delta=f"{get_delta_pct(s_cw['GMV'], s_lw['GMV']):.1%}")
-    k3.metric("ROAS", f"{roas_cw:.2f}x", delta=f"{roas_cw - roas_lw:.2f} pts")
+    k3.metric("ROAS", f"{s_cw['ROAS']:.2f}x", delta=f"{s_cw['ROAS'] - s_lw['ROAS']:.2f} pts")
     k4.metric("Wishlists", f"{s_cw['Wish']:,.0f}", delta=f"{get_delta_pct(s_cw['Wish'], s_lw['Wish']):.1%}")
     k5.metric("CVR", f"{(s_cw['Sold']/s_cw['Clicks'] if s_cw['Clicks']>0 else 0):.1%}")
 
-    # --- MARKET & CATEGORY ANALYSIS ---
-    st.markdown("---")
-    col_m1, col_m2 = st.columns(2)
-    
-    with col_m1:
-        st.subheader("🌍 Market Performance & GMV Share")
-        m_data = df_f[df_f[time_grain] == cw_p].groupby('Market').agg({'Spend':'sum', 'GMV':'sum'}).reset_index()
-        total_g = m_data['GMV'].sum()
-        m_data['ROAS'] = m_data['GMV'] / m_data['Spend']
-        m_data['COS'] = (m_data['Spend'] / m_data['GMV']).fillna(0)
-        m_data['GMV Share'] = (m_data['GMV'] / total_g).fillna(0)
-        st.dataframe(m_data.sort_values('GMV', ascending=False), column_config={
-            "Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"),
-            "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"),
-            "ROAS": st.column_config.NumberColumn(format="%.2fx"),
-            "COS": st.column_config.NumberColumn(format="%.1%"),
-            "GMV Share": st.column_config.ProgressColumn(format="%.1%", min_value=0, max_value=1)
-        }, hide_index=True, use_container_width=True)
-
-    with col_m2:
-        st.subheader("📁 Category Performance")
-        cat_data = df_f[df_f[time_grain] == cw_p].groupby('Category').agg({'Spend':'sum', 'GMV':'sum'}).reset_index()
-        cat_data['ROAS'] = cat_data['GMV'] / cat_data['Spend']
-        cat_data['COS'] = (cat_data['Spend'] / cat_data['GMV']).fillna(0)
-        st.dataframe(cat_data.sort_values('GMV', ascending=False), column_config={
-            "Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"),
-            "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"),
-            "ROAS": st.column_config.NumberColumn(format="%.2fx"),
-            "COS": st.column_config.NumberColumn(format="%.1%"),
-        }, hide_index=True, use_container_width=True)
-
-    # --- CHARTS SECTION (Restored the efficiency trend) ---
+    # --- UI SECTION 2: VISUAL ANALYTICS ---
     st.markdown("---")
     row2_1, row2_2 = st.columns([2, 1])
 
@@ -185,16 +164,73 @@ if f_mkt:
 
     with row2_2:
         st.subheader("Top Wishlisted Styles")
-        wish_df = df_f[df_f[time_grain] == cw_p].groupby(['ArticleName', 'Config SKU'])['Wish'].sum().reset_index()
+        wish_df = df_f[df_f[time_grain] == curr_p].groupby(['ArticleName', 'Config SKU'])['Wish'].sum().reset_index()
         wish_df = wish_df.sort_values('Wish', ascending=False).head(10)
         fig_wish = px.bar(wish_df, y='ArticleName', x='Wish', orientation='h', color_discrete_sequence=['#ffaa00'])
         fig_wish.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), yaxis={'categoryorder':'total ascending'})
         st.plotly_chart(fig_wish, use_container_width=True)
+        st.dataframe(wish_df[['Config SKU', 'ArticleName', 'Wish']], hide_index=True, use_container_width=True)
 
-    # --- SKU COPY LIST ---
+    # --- MARKET & CATEGORY PERFORMANCE ---
     st.markdown("---")
-    st.subheader("📋 Copy Config SKUs (Top Performers)")
-    st.dataframe(wish_df[['Config SKU', 'ArticleName', 'Wish']], hide_index=True, use_container_width=True)
+    c_m, c_c = st.columns(2)
+    with c_m:
+        st.subheader("🌍 Market Performance")
+        m_data = df_f[df_f[time_grain] == curr_p].groupby('Market').agg({'Spend':'sum', 'GMV':'sum'}).reset_index()
+        m_data['ROAS'] = m_data['GMV'] / m_data['Spend']
+        m_data['COS'] = (m_data['Spend'] / m_data['GMV']).fillna(0)
+        m_data['GMV Share'] = (m_data['GMV'] / m_data['GMV'].sum()).fillna(0)
+        st.dataframe(m_data.sort_values('GMV', ascending=False), column_config={
+            "Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"),
+            "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"),
+            "ROAS": st.column_config.NumberColumn(format="%.2fx"),
+            "COS": st.column_config.NumberColumn(format="%.1%"), # FIX: Display as %
+            "GMV Share": st.column_config.ProgressColumn(format="%.1%", min_value=0, max_value=1)
+        }, hide_index=True, use_container_width=True)
+        
+    with c_c:
+        st.subheader("📁 Category Performance")
+        cat_data = df_f[df_f[time_grain] == curr_p].groupby('Category').agg({'Spend':'sum', 'GMV':'sum'}).reset_index()
+        cat_data['ROAS'] = cat_data['GMV'] / cat_data['Spend']
+        cat_data['COS'] = (cat_data['Spend'] / cat_data['GMV']).fillna(0)
+        st.dataframe(cat_data.sort_values('GMV', ascending=False), column_config={
+            "Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"),
+            "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"),
+            "ROAS": st.column_config.NumberColumn(format="%.2fx"),
+            "COS": st.column_config.NumberColumn(format="%.1%"), # FIX: Display as %
+        }, hide_index=True, use_container_width=True)
+
+    # --- UI SECTION 3: CAMPAIGN & STOCK THREAT (RESTORED) ---
+    st.markdown("---")
+    st.subheader("📣 Campaign Level Breakdown & Stock Threats")
+    camp_cw = df_f[df_f[time_grain] == curr_p].groupby(['ZMS Campaign', 'Config SKU', 'ArticleName']).agg({
+        'Spend':'sum', 'GMV':'sum', 'Wish':'sum', 'Sold':'sum', 'TotalStock':'max'
+    }).reset_index()
+    camp_cw['Stock Threat'] = camp_cw.apply(lambda x: "🚨 Sell Out Risk" if x['Sold'] >= x['TotalStock'] and x['TotalStock'] > 0 else ("✅ OK" if x['TotalStock'] > 0 else "❓ No Data"), axis=1)
+
+    st.dataframe(
+        camp_cw[['ZMS Campaign', 'ArticleName', 'Config SKU', 'Sold', 'TotalStock', 'Stock Threat', 'Spend', 'GMV', 'Wish']].sort_values('Sold', ascending=False),
+        column_config={
+            "Spend": st.column_config.NumberColumn(f"Spend {currency_label}", format=f"{currency_label}%.0f"),
+            "GMV": st.column_config.NumberColumn(f"GMV {currency_label}", format=f"{currency_label}%.0f"),
+            "Sold": f"Sold ({time_grain})",
+            "TotalStock": "Style Stock Level"
+        }, hide_index=True, use_container_width=True
+    )
+
+    # --- UI SECTION 4: STRATEGIC COMMENTARY (RESTORED) ---
+    st.markdown("---")
+    st.subheader("📝 Strategic Observations")
+    roas_trend = "positive" if s_cw['ROAS'] >= s_lw['ROAS'] else "negative"
+    stock_threats = len(camp_cw[camp_cw['Stock Threat'] == "🚨 Sell Out Risk"])
+    
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.markdown(f"""<div class="commentary-box"><strong>✅ What has improved</strong><ul><li>Efficiency trend is <b>{roas_trend}</b> for this period.</li><li>Customer desire for top wishlisted items remains strong.</li></ul></div>""", unsafe_allow_html=True)
+    with col_b:
+        st.markdown(f"""<div class="commentary-box"><strong>⚠️ Areas to optimize</strong><ul><li>Detected <b>{stock_threats}</b> articles with high sell-out risk.</li><li>Review high-spend campaigns with ROAS below efficiency targets.</li></ul></div>""", unsafe_allow_html=True)
+    with col_c:
+        st.markdown("""<div class="commentary-box"><strong>🎯 Next Steps</strong><ul><li><b>Inventory:</b> Prioritize restock for "Sell Out Risk" articles.</li><li><b>Retargeting:</b> Push top wishlisted SKUs in high-ROAS markets.</li></ul></div>""", unsafe_allow_html=True)
 
 else:
     st.info("👈 Please upload the reports in the sidebar.")
