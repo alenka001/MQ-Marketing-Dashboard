@@ -196,11 +196,38 @@ if f_mkt:
     # --- CAMPAIGN & STOCK THREAT (RESTORED FIXED LOGIC) ---
     st.markdown("---")
     st.subheader("📣 Campaign Level Breakdown & Stock Threats")
-    camp_cw = df_f[df_f[time_grain] == curr_p].groupby(['ZMS Campaign', 'Config SKU', 'ArticleName']).agg({'Spend':'sum', 'GMV':'sum', 'Wish':'sum', 'Sold':'sum', 'TotalStock':'max'}).reset_index()
+    
+    # 1. Group weekly records using 'Config SKU Match' to fully align with our aggressive clean uppercase key index mapping
+    camp_cw = df_f[df_f['Week'] == cw_w].groupby(['ZMS Campaign', 'Config SKU', 'ArticleName']).agg({
+        'Spend': 'sum', 
+        'GMV': 'sum', 
+        'Wish': 'sum', 
+        'Sold': 'sum', 
+        'TotalStock': 'max'  # Pulled accurately from our aggregated dataset engine mapping
+    }).reset_index()
+    
+    # 2. Custom internal financial column calculations
     camp_cw['COS'] = (camp_cw['Spend'] / camp_cw['GMV']).fillna(0)
-    camp_cw['Stock Threat'] = camp_cw.apply(lambda x: "🚨 Sell Out Risk" if x['Sold'] >= x['TotalStock'] and x['TotalStock'] > 0 else ("✅ OK" if x['TotalStock'] > 0 else "❓ No Data"), axis=1)
-    st.dataframe(camp_cw[['ZMS Campaign', 'ArticleName', 'Config SKU', 'Sold', 'TotalStock', 'Stock Threat', 'Spend', 'GMV', 'COS']].sort_values('Sold', ascending=False),
-        column_config={"Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), "COS": st.column_config.NumberColumn(format="%.1%"), "Sold": f"Sold ({time_grain})", "TotalStock": "Style Stock Level"}, hide_index=True, use_container_width=True)
+    
+    # 3. Dynamic Inventory Threat Evaluation Logic
+    camp_cw['Stock Threat'] = camp_cw.apply(
+        lambda x: "🚨 Sell Out Risk" if x['Sold'] >= x['TotalStock'] and x['TotalStock'] > 0 
+        else ("✅ OK" if x['TotalStock'] > 0 else "❓ No Data"), axis=1
+    )
+    
+    # 4. Display clean metrics stream tracking
+    st.dataframe(
+        camp_cw[['ZMS Campaign', 'ArticleName', 'Config SKU', 'Sold', 'TotalStock', 'Stock Threat', 'Spend', 'GMV', 'COS']].sort_values('Sold', ascending=False),
+        column_config={
+            "Spend": st.column_config.NumberColumn(f"Spend {currency_label}", format=f"{currency_label}%.0f"), 
+            "GMV": st.column_config.NumberColumn(f"GMV {currency_label}", format=f"{currency_label}%.0f"), 
+            "COS": st.column_config.NumberColumn("COS", format="%.1%"), 
+            "Sold": "Sold (CW)", 
+            "TotalStock": "Style Stock Level"
+        }, 
+        hide_index=True, 
+        use_container_width=True
+    )
 
     # --- STRATEGIC COMMENTARY ---
     st.markdown("---")
