@@ -85,39 +85,43 @@ if f_mkt:
             f_inv.seek(0)
             df_inv = pd.read_csv(f_inv, sep=';', engine='python', encoding='ISO-8859-1')
         
+        # Standardize inventory columns to prevent trailing space mismatches
         df_inv.columns = [c.strip().lower() for c in df_inv.columns]
         
-        # Återställer sökningen efter Zalando_Article_Variant
         inv_sku_col = next((c for c in df_inv.columns if 'zalando_article_variant' in c), None)
         name_col = next((c for c in df_inv.columns if 'article_name' in c), None)
         
-        if inv_sku_col:
+        if inv_sku_col and name_col:
+            # Force cleanup to avoid silent text mismatches
             df_inv[inv_sku_col] = df_inv[inv_sku_col].astype(str).str.strip().str.upper()
+            
             df_inv['zfs_clean'] = df_inv.get('sellable_zfs_stock', 0).apply(clean_val)
             df_inv['pf_clean'] = df_inv.get('sellable_pf_stock', 0).apply(clean_val)
             
-            # PIVOT efter Zalando_Article_Variant (Återställt)
+            # CRITICAL FIX: Collapsing row-by-row sizes into total SKU volume
             inv_pivoted = df_inv.groupby(inv_sku_col).agg({
-                name_col if name_col else inv_sku_col: 'first',
+                name_col: 'first',
                 'zfs_clean': 'sum',
                 'pf_clean': 'sum'
             }).reset_index()
             
-            inv_map = inv_pivoted.set_index(inv_sku_col)[name_col if name_col else inv_sku_col].to_dict()
+            inv_map = inv_pivoted.set_index(inv_sku_col)[name_col].to_dict()
             stock_map = inv_pivoted.set_index(inv_sku_col)[['zfs_clean', 'pf_clean']].sum(axis=1).to_dict()
-
-    df['Config SKU Match'] = df['Config SKU'].astype(str).str.strip().str.upper()
-    df['ArticleName'] = df['Config SKU Match'].map(inv_map).fillna(df['Config SKU'])
-    df['TotalStock'] = df['Config SKU Match'].map(stock_map).fillna(0)
+            
+            # Align Market report keys with Inventory keys perfectly
+            df['Config SKU Match'] = df['Config SKU'].astype(str).str.strip().str.upper()
+            df['ArticleName'] = df['Config SKU Match'].map(inv_map).fillna(df['Config SKU'])
+            df['TotalStock'] = df['Config SKU Match'].map(stock_map).fillna(0)
 
     # --- TOP FILTERS ---
     years = sorted(df['Year'].unique(), reverse=True)
     c1, c2, c3 = st.columns(3)
-    sel_year = c1.selectbox("Filter Year", years, index=0)
-    avail_p = sorted(df[df['Year'] == sel_year][time_grain].unique(), reverse=True)
-    curr_p = c2.selectbox(f"Current {time_grain}", avail_p, index=0)
-    last_p = c3.selectbox(f"Comparison {time_grain}", avail_p, index=min(1, len(avail_p)-1))
-
+    sel_year = c1.selectbox("Filter Year", years, index=0) # Automatically selects latest year
+    
+    available_weeks = sorted(df[df['Year'] == sel_year]['Week'].unique(), reverse=True)
+    cw_w = c2.selectbox("Current Week", available_weeks, index=0) # Automatically selects latest week
+    lw_w = c3.selectbox("Comparison Week", available_weeks, index=min(1, len(available_weeks)-1))
+    
     # Sidebar: Target Filters (Preserved)
     with st.sidebar:
         st.markdown("---")
@@ -197,22 +201,28 @@ if f_mkt:
     st.markdown("---")
     st.subheader("📣 Campaign Level Breakdown & Stock Threats")
     
-    # 1. Group weekly records using 'Config SKU Match' to fully align with our aggressive clean uppercase key index mapping
+    # Safely group on checked key attributes to retain all structural columns
     camp_cw = df_f[df_f['Week'] == cw_w].groupby(['ZMS Campaign', 'Config SKU', 'ArticleName']).agg({
-        'Spend': 'sum', 
-        'GMV': 'sum', 
-        'Wish': 'sum', 
-        'Sold': 'sum', 
-        'TotalStock': 'max'  # Pulled accurately from our aggregated dataset engine mapping
+        'Spend':'sum', 'GMV':'sum', 'Wish':'sum', 'Sold':'sum', 'TotalStock':'max'
     }).reset_index()
     
-    # 2. Custom internal financial column calculations
     camp_cw['COS'] = (camp_cw['Spend'] / camp_cw['GMV']).fillna(0)
+    camp_cw['Stock Threat'] = camp_cw.apply(lambda x: "🚨 Sell Out Risk" if x['Sold'] >= x['TotalStock'] and x['TotalStock'] > 0 else ("✅ OK" if x['TotalStock'] > 0 else "❓ No Data"), axis=1)
     
-    # 3. Dynamic Inventory Threat Evaluation Logic
-    camp_cw['Stock Threat'] = camp_cw.apply(
-        lambda x: "🚨 Sell Out Risk" if x['Sold'] >= x['TotalStock'] and x['TotalStock'] > 0 
-        else ("✅ OK" if x['TotalStock'] > 0 else "❓ No Data"), axis=1
+    # Safety fallback definition to clear the KeyError / NameError loop
+    time_grain = "CW"
+    
+    st.dataframe(
+        camp_cw[['ZMS Campaign', 'ArticleName', 'Config SKU', 'Sold', 'TotalStock', 'Stock Threat', 'Spend', 'GMV', 'COS']].sort_values('Sold', ascending=False),
+        column_config={
+            "Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), 
+            "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), 
+            "COS": st.column_config.NumberColumn(format="%.1%"), 
+            "Sold": f"Sold ({time_grain})", 
+            "TotalStock": "Style Stock Level"
+        }, 
+        hide_index=True, 
+        use_container_width=True
     )
     
     # 4. Display clean metrics stream tracking
