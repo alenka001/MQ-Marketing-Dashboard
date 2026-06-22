@@ -76,7 +76,7 @@ if f_mkt:
         if v in df.columns: df[k] = df[v].apply(clean_val)
         else: df[k] = 0.0
 
-    # 2. LOAD INVENTORY DATA & PIVOT (RESTORED WORKING SCRIPT)
+    # 2. LOAD INVENTORY DATA & PIVOT
     inv_map, stock_map = {}, {}
     if f_inv:
         try:
@@ -85,20 +85,17 @@ if f_mkt:
             f_inv.seek(0)
             df_inv = pd.read_csv(f_inv, sep=';', engine='python', encoding='ISO-8859-1')
         
-        # Standardize inventory columns to prevent trailing space mismatches
         df_inv.columns = [c.strip().lower() for c in df_inv.columns]
         
         inv_sku_col = next((c for c in df_inv.columns if 'zalando_article_variant' in c), None)
         name_col = next((c for c in df_inv.columns if 'article_name' in c), None)
         
         if inv_sku_col and name_col:
-            # Force cleanup to avoid silent text mismatches
             df_inv[inv_sku_col] = df_inv[inv_sku_col].astype(str).str.strip().str.upper()
             
             df_inv['zfs_clean'] = df_inv.get('sellable_zfs_stock', 0).apply(clean_val)
             df_inv['pf_clean'] = df_inv.get('sellable_pf_stock', 0).apply(clean_val)
             
-            # CRITICAL FIX: Collapsing row-by-row sizes into total SKU volume
             inv_pivoted = df_inv.groupby(inv_sku_col).agg({
                 name_col: 'first',
                 'zfs_clean': 'sum',
@@ -108,21 +105,29 @@ if f_mkt:
             inv_map = inv_pivoted.set_index(inv_sku_col)[name_col].to_dict()
             stock_map = inv_pivoted.set_index(inv_sku_col)[['zfs_clean', 'pf_clean']].sum(axis=1).to_dict()
             
-            # Align Market report keys with Inventory keys perfectly
             df['Config SKU Match'] = df['Config SKU'].astype(str).str.strip().str.upper()
             df['ArticleName'] = df['Config SKU Match'].map(inv_map).fillna(df['Config SKU'])
             df['TotalStock'] = df['Config SKU Match'].map(stock_map).fillna(0)
 
     # --- TOP FILTERS ---
+    st.title(f"📊 {client_name} Strategic Board")
+    
     years = sorted(df['Year'].unique(), reverse=True)
     c1, c2, c3 = st.columns(3)
-    sel_year = c1.selectbox("Filter Year", years, index=0) # Automatically selects latest year
+    sel_year = c1.selectbox("Filter Year", years, index=0)
     
+    # KORRIGERING: Hämta tillgängliga perioder baserat på sidebarens val (Vecka eller Månad)
+    available_periods = sorted(df[df['Year'] == sel_year][time_grain].unique(), reverse=True)
+    
+    # Tilldela valda värden direkt till curr_p (Current Period) och last_p (Last Period)
+    curr_p = c2.selectbox(f"Current {time_grain}", available_periods, index=0)
+    last_p = c3.selectbox(f"Comparison {time_grain}", available_periods, index=min(1, len(available_periods)-1))
+    
+    # Håll koll på den specifika veckan för kampanj- och lagertabellen i botten
     available_weeks = sorted(df[df['Year'] == sel_year]['Week'].unique(), reverse=True)
-    cw_w = c2.selectbox("Current Week", available_weeks, index=0) # Automatically selects latest week
-    lw_w = c3.selectbox("Comparison Week", available_weeks, index=min(1, len(available_weeks)-1))
-    
-    # Sidebar: Target Filters (Preserved)
+    cw_w = available_weeks[0] if available_weeks else 1
+
+    # Sidebar: Target Filters
     with st.sidebar:
         st.markdown("---")
         st.header("🎯 Target Filters")
@@ -147,7 +152,7 @@ if f_mkt:
     s_lw = get_period_stats(last_p)
     dropout_cw = (s_cw['Cart'] - s_cw['Sold']) / s_cw['Cart'] if s_cw['Cart'] > 0 else 0
 
-    # --- UI SECTION 1: KPI TILES (Expanded with Impressions & PDP) ---
+    # --- UI SECTION 1: KPI TILES ---
     st.subheader(f"Snapshot: {time_grain} {curr_p} vs {last_p}")
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Ad Spend", f"{currency_label}{s_cw['Spend']*multiplier:,.0f}", delta=f"{get_delta_pct(s_cw['Spend'], s_lw['Spend']):.1%}", delta_color="inverse")
@@ -174,13 +179,18 @@ if f_mkt:
         fig.add_trace(go.Scatter(x=trend_data[time_grain], y=trend_data['ROAS'], name="ROAS", line=dict(color='#2ecc71', width=3)), secondary_y=True)
         fig.update_layout(barmode='group', height=350, margin=dict(l=0, r=0, t=20, b=0), legend=dict(orientation="h", y=1.1))
         st.plotly_chart(fig, use_container_width=True)
+        
     with row2_2:
         st.subheader("Top Wishlisted Styles")
-        wish_df = df_f[df_f[time_grain] == curr_p].groupby(['ArticleName', 'Config SKU'])['Wish'].sum().reset_index().sort_values('Wish', ascending=False).head(10)
-        st.plotly_chart(px.bar(wish_df, y='ArticleName', x='Wish', orientation='h', color_discrete_sequence=['#ffaa00']), use_container_width=True)
-        st.dataframe(wish_df[['Config SKU', 'ArticleName', 'Wish']], hide_index=True, use_container_width=True)
+        wish_df = df_f[df_f[time_grain] == curr_p].groupby(['ArticleName', 'Config SKU'])['Wish'].sum().reset_index()
+        wish_df['DisplayLabel'] = wish_df['ArticleName'] + " (" + wish_df['Config SKU'] + ")"
+        wish_df = wish_df.sort_values('Wish', ascending=False).head(10)
+        
+        fig_wish = px.bar(wish_df, y='DisplayLabel', x='Wish', orientation='h', color_discrete_sequence=['#ffaa00'])
+        fig_wish.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), yaxis={'categoryorder':'total ascending'}, showlegend=False)
+        st.plotly_chart(fig_wish, use_container_width=True)
 
-    # --- MARKET & CATEGORY (COS % FIXED) ---
+    # --- MARKET & CATEGORY ---
     st.markdown("---")
     c_m, c_c = st.columns(2)
     with c_m:
@@ -197,11 +207,10 @@ if f_mkt:
         cat_data['COS'] = (cat_data['Spend'] / cat_data['GMV']).fillna(0)
         st.dataframe(cat_data.sort_values('GMV', ascending=False), column_config={"Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), "ROAS": st.column_config.NumberColumn(format="%.2fx"), "COS": st.column_config.NumberColumn(format="%.1%")}, hide_index=True, use_container_width=True)
 
-    # --- CAMPAIGN & STOCK THREAT (RESTORED FIXED LOGIC) ---
+    # --- CAMPAIGN & STOCK THREAT ---
     st.markdown("---")
     st.subheader("📣 Campaign Level Breakdown & Stock Threats")
     
-    # Safely group on checked key attributes to retain all structural columns
     camp_cw = df_f[df_f['Week'] == cw_w].groupby(['ZMS Campaign', 'Config SKU', 'ArticleName']).agg({
         'Spend':'sum', 'GMV':'sum', 'Wish':'sum', 'Sold':'sum', 'TotalStock':'max'
     }).reset_index()
@@ -209,29 +218,12 @@ if f_mkt:
     camp_cw['COS'] = (camp_cw['Spend'] / camp_cw['GMV']).fillna(0)
     camp_cw['Stock Threat'] = camp_cw.apply(lambda x: "🚨 Sell Out Risk" if x['Sold'] >= x['TotalStock'] and x['TotalStock'] > 0 else ("✅ OK" if x['TotalStock'] > 0 else "❓ No Data"), axis=1)
     
-    # Safety fallback definition to clear the KeyError / NameError loop
-    time_grain = "CW"
-    
-    st.dataframe(
-        camp_cw[['ZMS Campaign', 'ArticleName', 'Config SKU', 'Sold', 'TotalStock', 'Stock Threat', 'Spend', 'GMV', 'COS']].sort_values('Sold', ascending=False),
-        column_config={
-            "Spend": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), 
-            "GMV": st.column_config.NumberColumn(format=f"{currency_label}%.0f"), 
-            "COS": st.column_config.NumberColumn(format="%.1%"), 
-            "Sold": f"Sold ({time_grain})", 
-            "TotalStock": "Style Stock Level"
-        }, 
-        hide_index=True, 
-        use_container_width=True
-    )
-    
-    # 4. Display clean metrics stream tracking
     st.dataframe(
         camp_cw[['ZMS Campaign', 'ArticleName', 'Config SKU', 'Sold', 'TotalStock', 'Stock Threat', 'Spend', 'GMV', 'COS']].sort_values('Sold', ascending=False),
         column_config={
             "Spend": st.column_config.NumberColumn(f"Spend {currency_label}", format=f"{currency_label}%.0f"), 
             "GMV": st.column_config.NumberColumn(f"GMV {currency_label}", format=f"{currency_label}%.0f"), 
-            "COS": st.column_config.NumberColumn("COS", format="%.1%"), 
+            "COS": st.column_config.NumberColumn(format="%.1%"), 
             "Sold": "Sold (CW)", 
             "TotalStock": "Style Stock Level"
         }, 
